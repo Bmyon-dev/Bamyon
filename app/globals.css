@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: "Sora", sans-serif;
+  --font-body: "Inter", sans-serif;
+  /* RGB triplets (not hex) so Tailwind's /opacity shorthand, e.g.
+     bg-bamyon-green/5, can compute an alpha value at build time.
+     0d6b4f -> 13 107 79, 0a5540 -> 10 85 64 */
+  --color-accent-rgb: 13 107 79;
+  --color-accent-dark-rgb: 10 85 64;
+}
+
+body {
+  background: #f7f7f5;
+  color: #14231d;
+}
+
+.dark body {
+  background: #0f1a16;
+  color: #e8e8e6;
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-2xl border border-black/5 shadow-sm
+      dark:bg-[#182620] dark:border-white/10;
+  }
+
+  .btn-primary {
+    @apply bg-bamyon-green text-white font-semibold rounded-full px-6 py-3
+      hover:bg-bamyon-greenDark transition-colors disabled:opacity-40
+      disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-white text-bamyon-green border border-bamyon-green font-semibold
+      rounded-full px-6 py-3 hover:bg-bamyon-green/5 transition-colors
+      dark:bg-transparent;
+  }
+
+  .btn-amber {
+    @apply bg-bamyon-amber text-black font-bold rounded-full px-6 py-3
+      hover:bg-bamyon-amberDark transition-colors;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-black/10 px-4 py-3 bg-white
+      focus:outline-none focus:ring-2 focus:ring-bamyon-green/40
+      dark:bg-[#0f1a16] dark:border-white/10 dark:text-white;
+  }
+}
+
+.dark .bg-bamyon-cream { background-color: #0f1a16 !important; }
+.dark .text-black,
+.dark .text-black\/70,
+.dark .text-black\/60 { color: #e8e8e6 !important; }
+.dark .text-black\/50,
+.dark .text-black\/40,
+.dark .text-black\/30 { color: #9aa39d !important; }
+.dark .border-black\/5,
+.dark .border-black\/10 { border-color: rgba(255,255,255,0.1) !important; }
+.dark .bg-white { background-color: #182620 !important; }
+.dark .bg-black\/5 { background-color: rgba(255,255,255,0.06) !important; }
+
+:focus-visible {
+  outline: 2px solid #0d6b4f;
+  outline-offset: 2px;
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}

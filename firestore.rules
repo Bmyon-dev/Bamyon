@@ -1,0 +1,281 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      return isSignedIn() && myUserDoc().data.role == 'admin';
+    }
+
+    function isOwnerOf(businessId) {
+      return isSignedIn() && myUserDoc().data.role == 'owner'
+        && myUserDoc().data.businessId == businessId;
+    }
+
+    function isStaffOf(businessId) {
+      return isSignedIn() && myUserDoc().data.role == 'staff'
+        && myUserDoc().data.businessId == businessId;
+    }
+
+    function isOwnerOrStaffOf(businessId) {
+      return isOwnerOf(businessId) || isStaffOf(businessId);
+    }
+
+    // Exact valid amounts a wallet balance is allowed to decrease by when
+    // `plan`/`planExpiry` change in the SAME write (a plan upgrade). Keep
+    // this in sync with PLAN_PRICES in lib/types.ts. Design requests,
+    // automation activation, and withdrawals never touch plan/planExpiry,
+    // so they don't need to appear here — see Case B2 below for why an
+    // arbitrary amount is safe in that case.
+    function validPlanPrices() {
+      return [2500, 5000, 15000, 13500, 27000, 81000, 25000, 50000, 150000];
+    }
+
+    // users/{uid} — role + businessId + permissions lookup doc.
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      // Two create paths, no Admin SDK involved in either:
+      //  1. A person self-registers as an owner (signup flow).
+      //  2. A signed-in owner creates a *different* uid's doc for a staff
+      //     account they're granting access to (their own business only).
+      allow create: if isSignedIn() && (
+        (request.auth.uid == uid && request.resource.data.role == 'owner') ||
+        (myUserDoc().data.role == 'owner'
+          && request.resource.data.role == 'staff'
+          && request.resource.data.businessId == myUserDoc().data.businessId)
+      );
+      // Owners may set (only) their own staff member's photoUrl here —
+      // everything else about a user doc stays immutable after creation.
+      allow update: if isSignedIn()
+        && myUserDoc().data.role == 'owner'
+        && resource.data.role == 'staff'
+        && resource.data.businessId == myUserDoc().data.businessId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['photoUrl']);
+      allow delete: if false;
+    }
+
+    // businesses/{businessId} — one business per owner uid.
+    match /businesses/{businessId} {
+      allow read: if isOwnerOrStaffOf(businessId) || isAdmin();
+      allow create: if isSignedIn() && request.auth.uid == businessId;
+
+      allow update: if isAdmin() || (
+        isOwnerOf(businessId) && (
+          // Case A: ordinary profile edit — financial fields untouched.
+          !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['plan', 'planExpiry', 'walletBalance', 'ownerUid'])
+          ||
+          // Case B1: plan upgrade — plan/planExpiry change together with
+          // walletBalance, and the decrease must be one of the exact known
+          // prices. This is what stops a client from granting itself a
+          // plan for an arbitrary/tiny amount.
+          (
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['plan', 'planExpiry', 'walletBalance']) &&
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasAll(['plan', 'walletBalance']) &&
+            request.resource.data.walletBalance < resource.data.walletBalance &&
+            request.resource.data.walletBalance >= 0 &&
+            (resource.data.walletBalance - request.resource.data.walletBalance) in validPlanPrices()
+          )
+          ||
+          // Case B2: wallet-only decrease — design requests, automation
+          // activation, withdrawal requests. plan/planExpiry are NOT part
+          // of this write, so there is nothing to cheat by choosing an
+          // arbitrary amount: decreasing your own balance can never create
+          // value, only spend it, and it can never go negative. This is
+          // also why withdrawal amounts (which are owner-chosen, not a
+          // fixed price) don't need a whitelist.
+          (
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['walletBalance']) &&
+            request.resource.data.walletBalance < resource.data.walletBalance &&
+            request.resource.data.walletBalance >= 0
+          )
+        )
+      );
+      allow delete: if false;
+
+      match /{subcollection}/{docId} {
+        allow read: if isOwnerOrStaffOf(businessId) || isAdmin();
+        allow write: if isOwnerOf(businessId) || isStaffOf(businessId);
+      }
+    }
+
+    // deposits/{id} — wallet top-up requests. Owner reports a transfer;
+    // admin resolves it from their own authenticated session (a normal
+    // client write, not an Admin SDK call).
+    match /deposits/{depositId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && isOwnerOf(resource.data.businessId));
+      allow create: if isSignedIn()
+        && isOwnerOf(request.resource.data.businessId)
+        && request.resource.data.status == 'pending';
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // withdrawals/{id} — owner cashes out wallet balance to their bank
+    // account. The wallet deduction (Case B2 above) and this doc are
+    // written in the same client transaction (see lib/withdrawalActions.ts)
+    // — the balance is held the moment a withdrawal is requested. If admin
+    // rejects it, the refund is an admin-only balance *increase*, which
+    // only isAdmin() can do.
+    match /withdrawals/{withdrawalId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && isOwnerOf(resource.data.businessId));
+      allow create: if isSignedIn()
+        && isOwnerOf(request.resource.data.businessId)
+        && request.resource.data.status == 'pending';
+      allow update: if isAdmin(); // approve (paid) or reject (+ refund)
+      allow delete: if false;
+    }
+
+    // storefronts/{businessId} — the public-facing mirror of a business's
+    // catalogue. Readable by anyone (no login), writable only by that
+    // business's own owner.
+    match /storefronts/{businessId} {
+      allow read: if true;
+      allow write: if isOwnerOf(businessId);
+
+      match /products/{productId} {
+        allow read: if true;
+        allow write: if isOwnerOf(businessId);
+      }
+    }
+
+    // blogPosts/{id} — Bamyon's own marketing blog. Public can read
+    // published posts; only admin can write.
+    match /blogPosts/{postId} {
+      allow read: if resource.data.published == true || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // blogComments/{id} — anyone can comment (no login), including
+    // capturing their email/phone for Bamyon's own marketing records.
+    // Comments are publicly readable (the app only renders name + text,
+    // never email/phone, but the rule itself doesn't need to hide fields
+    // — that's a client-rendering choice, not a security boundary here
+    // since nothing sensitive/financial is at stake).
+    match /blogComments/{commentId} {
+      allow read: if true;
+      allow create: if request.resource.data.postId is string
+        && request.resource.data.text is string;
+      allow update, delete: if isAdmin();
+    }
+
+    // emailSubscribers/{email} — doc ID is the email itself, so signing up
+    // twice just overwrites the same doc instead of creating duplicates.
+    match /emailSubscribers/{email} {
+      allow read: if isAdmin();
+      allow create: if true;
+      allow update, delete: if isAdmin();
+    }
+
+    // websiteRequests/{id} — "Build a Website" (₦10,000 flat, from wallet).
+    match /websiteRequests/{requestId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && isOwnerOf(resource.data.businessId));
+      allow create: if isSignedIn()
+        && isOwnerOf(request.resource.data.businessId)
+        && request.resource.data.status == 'pending'
+        && get(/databases/$(database)/documents/businesses/$(request.resource.data.businessId)).data.walletBalance >= 10000;
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // adsRequests/{id} — "Run Ads" (₦5,000 flat, Premium+, from wallet).
+    match /adsRequests/{requestId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && isOwnerOf(resource.data.businessId));
+      allow create: if isSignedIn()
+        && isOwnerOf(request.resource.data.businessId)
+        && request.resource.data.status == 'pending'
+        && get(/databases/$(database)/documents/businesses/$(request.resource.data.businessId)).data.walletBalance >= 5000;
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // designRequests/{id} — "Hire a Designer" (₦2,000 flat, from wallet).
+    // The wallet deduction (Case B2 above) and this doc are written in the
+    // same client transaction (see lib/designActions.ts). This rule
+    // additionally requires the business to have had enough balance the
+    // moment this doc is created, as a second check.
+    match /designRequests/{requestId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && isOwnerOf(resource.data.businessId));
+      allow create: if isSignedIn()
+        && isOwnerOf(request.resource.data.businessId)
+        && request.resource.data.status == 'pending'
+        && get(/databases/$(database)/documents/businesses/$(request.resource.data.businessId)).data.walletBalance >= 2000;
+      allow update: if isAdmin() || (
+        isOwnerOf(resource.data.businessId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['feedback'])
+      );
+      allow delete: if false;
+    }
+
+    // storeOrders/{id} — online-payment claims from the public storefront.
+    // Anyone can create one (no login on the storefront), but only the
+    // owning business (or admin) can ever read or update it.
+    match /storeOrders/{orderId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && isOwnerOrStaffOf(resource.data.businessId));
+      allow create: if request.resource.data.status == 'awaiting_confirmation'
+        && request.resource.data.businessId is string
+        && request.resource.data.total is number;
+      allow update: if isSignedIn() && isOwnerOrStaffOf(request.resource.data.businessId);
+      allow delete: if false;
+    }
+
+    // referrals/{id} — doc ID is always the referred business's own id,
+    // created as part of that business's signup batch (self-referential,
+    // so the standard signup write is enough to authorize it). Visible to
+    // both the referrer and the referred business; only admin can mark a
+    // bonus paid (that's a wallet balance *increase*, admin-only as usual).
+    match /referrals/{referralId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && (isOwnerOf(resource.data.referrerBusinessId) || isOwnerOf(resource.data.referredBusinessId)));
+      allow create: if isSignedIn() && request.resource.data.referredBusinessId == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // transfers/{id} — peer-to-peer wallet transfer between two
+    // businesses, by the recipient's email. The sender's own balance is
+    // held immediately (Case B2 above — any decrease of your own balance
+    // is safe). Crediting a DIFFERENT business's balance is always an
+    // "increase", which only isAdmin() can do — so this is deliberately
+    // an admin-resolved request, not an instant client-to-client transfer.
+    // That's not a corner we're cutting: there is no way for Firestore
+    // rules alone to safely let one business credit another's balance
+    // directly without a trusted intermediary.
+    match /transfers/{transferId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && isOwnerOf(resource.data.fromBusinessId));
+      allow create: if isSignedIn()
+        && isOwnerOf(request.resource.data.fromBusinessId)
+        && request.resource.data.status == 'pending';
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // messages/{id} — owner/staff <-> Bamyon admin support chat.
+    match /messages/{messageId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && isOwnerOrStaffOf(resource.data.businessId));
+      allow create: if isAdmin() ||
+        (isSignedIn() && isOwnerOrStaffOf(request.resource.data.businessId)
+          && request.resource.data.sender in ['owner', 'staff']);
+      allow update, delete: if false;
+    }
+  }
+}

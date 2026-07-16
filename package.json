@@ -1,0 +1,36 @@
+{
+  "name": "bamyon",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "firebase": "^10.12.4",
+    "jose": "^5.6.3",
+    "jspdf": "^2.5.1",
+    "jspdf-autotable": "^3.8.2",
+    "date-fns": "^3.6.0",
+    "recharts": "^2.12.7"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "eslint-config-next": "14.2.5",
+    "typescript": "^5.5.4",
+    "@types/node": "^20.14.13",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "tailwindcss": "^3.4.7",
+    "postcss": "^8.4.40",
+    "autoprefixer": "^10.4.19"
+  }
+}
